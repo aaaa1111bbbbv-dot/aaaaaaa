@@ -14,28 +14,33 @@ jobs:
         uses: actions/checkout@v4
 
       - name: Set up JDK 17
-        uses: actions/setup-java@v4
+        uses: actions/setup-java@v5
         with:
           java-version: '17'
           distribution: 'temurin'
 
-      - name: Setup Android SDK
+      - name: Setup Android SDK & Gradle
         run: |
+          set -e
           SDK_ROOT="${ANDROID_HOME:-/usr/local/lib/android/sdk}"
           mkdir -p "$SDK_ROOT"
           echo "sdk.dir=$SDK_ROOT" > local.properties
-          SDKMANAGER=$(find "$SDK_ROOT/cmdline-tools" -name "sdkmanager" 2>/dev/null | head -n 1)
+
+          SDKMANAGER=$(find "$SDK_ROOT/cmdline-tools" -name "sdkmanager" 2>/dev/null | head -n 1 || true)
           if [ -n "$SDKMANAGER" ]; then
             yes | "$SDKMANAGER" --sdk_root="$SDK_ROOT" "platforms;android-34" "build-tools;34.0.0" "platform-tools" || true
           fi
 
-      - name: Setup Gradle
-        uses: gradle/actions/setup-gradle@v4
-        with:
-          gradle-version: '8.7'
+          if ! command -v gradle >/dev/null 2>&1; then
+            curl -fsSL https://services.gradle.org/distributions/gradle-8.7-bin.zip -o /tmp/gradle.zip
+            unzip -q /tmp/gradle.zip -d /opt/gradle
+            export PATH="/opt/gradle/gradle-8.7/bin:$PATH"
+            echo "/opt/gradle/gradle-8.7/bin" >> "$GITHUB_PATH"
+          fi
 
       - name: Create project files
         run: |
+          set -e
           mkdir -p .github/workflows app/src/main/assets app/src/main/java/uz/qoriqlash/app app/src/main/res/values
 
           cat <<'EOF' > settings.gradle.kts
@@ -350,5 +355,274 @@ jobs:
           <div class="st" id="hs"></div></div>
           <div class="card"><h2>Manba</h2>
           <select id="src" onchange="save()"><option value="phone">📱 Telefon kamerasi</option><option value="ip">📡 IP kameralar / NVR</option></select>
-          <div class="row"><button class="g" onclick="testPhone()">Telefon kamerasini tekshirish</button></div><div class="st" id="s1
+          <div class="row"><button class="g" onclick="testPhone()">Telefon kamerasini tekshirish</button></div><div class="st" id="s1"></div></div>
+          <div class="card"><h2>Bugungi hodisalar</h2><div id="cnt" class="st"></div></div>
+          </section>
 
+          <section id="t-set" class="hide">
+          <div class="card"><h2>🤖 Telegram bot</h2>
+          <input id="tok" placeholder="Bot token (123456:ABC...)" onchange="save()">
+          <input id="cid" placeholder="Chat ID" onchange="save()">
+          <button onclick="testTg()" style="width:100%">Tekshirish (sinov xabari)</button><div class="st" id="s2"></div></div>
+          <div class="card"><h2>📡 IP kameralar / NVR</h2>
+          <select id="br" onchange="save()"><option value="hik">Hikvision (kamera / NVR)</option><option value="dahua">Dahua (kamera / NVR)</option><option value="url">Boshqa (to‘liq rasm URL)</option></select>
+          <textarea id="ipa" placeholder="IP manzillar (vergul yoki yangi qator bilan):&#10;192.168.1.64&#10;192.168.1.100" onchange="save()"></textarea>
+          <div class="row"><input id="prt" placeholder="Port (80)" inputmode="numeric" onchange="save()"><input id="chs" placeholder="Kanallar: 1,2,3,4" onchange="save()"></div>
+          <input id="usr" placeholder="Kamera / NVR logini (admin)" autocapitalize="off" onchange="save()">
+          <input id="pwd" type="password" placeholder="Kamera / NVR paroli" onchange="save()">
+          <textarea id="ipu" placeholder="Faqat 'Boshqa' uchun URLlar (har biri yangi qatorda):&#10;http://192.168.1.64/snapshot.jpg" onchange="save()"></textarea>
+          <button onclick="testIp()" style="width:100%;margin-top:6px">Barcha kameralarni tekshirish</button><div class="st" id="s3"></div>
+          <img id="pv" class="hide" style="width:100%;border-radius:12px;margin-top:8px"></div>
+          <div class="card"><h2>⚙️ Funksiyalar</h2>
+          <label class="sw">🎬 Harakat — video Telegramga<input type="checkbox" id="fv" onchange="save()"></label>
+          <label class="sw">🔊 Baland tovush (shovqin) signali<input type="checkbox" id="fa" onchange="save()"></label>
+          <label class="sw">👥 Odam sanash (taxminiy)<input type="checkbox" id="fp" onchange="save()"></label>
+          <label class="sw">🕘 Kamera orqali davomat (keldi-ketdi)<input type="checkbox" id="fk" onchange="save()"></label>
+          <label class="sw">🌙 Ekranni yoqiq saqlash<input type="checkbox" id="fw" onchange="save()"></label>
+          <h2 style="margin-top:12px">Sezgirlik</h2><input type="range" id="sens" min="1" max="10" onchange="save()">
+          </div>
+          <button class="g" style="width:100%" onclick="logout()">Yaratuvchi kirishini qayta so‘rash</button>
+          </section>
+
+          <section id="t-log" class="hide"><div class="card"><input id="q" placeholder="🔎 Qidirish: kecha kim keldi?" oninput="renderLog()"><div id="log"></div>
+          <button class="g" onclick="clr()" style="margin-top:8px;width:100%">Tozalash</button></div></section>
+
+          <nav><button class="on" onclick="tab('home',this)">🏠<br>Asosiy</button><button onclick="tab('set',this)">⚙️<br>Sozlama</button><button onclick="tab('log',this)">🗂<br>Arxiv</button></nav>
+          </div>
+
+          <canvas id="c" class="hide"></canvas>
+          <script>
+          const H="0483921c9d5a28b0671d581a463abd3d8f0c507cd88d66d66350677a3d430a66";
+          const $=i=>document.getElementById(i);
+          const ld=(k,d)=>{try{return JSON.parse(localStorage.getItem(k))??d}catch(e){return d}};
+          const sv=(k,v)=>{try{localStorage.setItem(k,JSON.stringify(v))}catch(e){}};
+          let S=ld('qoriqlash_s',ld('isab_s',{src:'phone',tok:'',cid:'',fv:true,fa:true,fp:false,fk:false,fw:true,sens:5}));
+          const F={br:'br',ipa:'ipa',prt:'prt',usr:'usr',pwd:'pwd',chs:'chs',ip:'ipu'};
+          let PV={},ci=-1,curKey='',curLabel='',lastBlob=null,lastEventTs=0,lastAttTs=0;
+          let LOG=ld('qoriqlash_log',ld('isab_log',[])),run=false,stream=null,lastSoundTs=0,rec=null,wl=null,actx,an,timer,ipBusy=false;
+
+          function sha256(s){
+           const r=(n,x)=>(x>>>n)|(x<<(32-n));
+           const K=[],h=[];let p=0,c={};
+           for(let n=2;p<64;n++){if(!c[n]){for(let i=0;i<313;i+=n)c[i]=n;h[p]=(Math.pow(n,.5)*4294967296)|0;K[p++]=(Math.pow(n,1/3)*4294967296)|0}}
+           h.length=8;
+           const b=unescape(encodeURIComponent(s));const l=b.length*8;const w=[];
+           for(let i=0;i<b.length;i++)w[i>>2]|=b.charCodeAt(i)<<(24-(i%4)*8);
+           w[b.length>>2]|=0x80<<(24-(b.length%4)*8);
+           const len=((b.length+8>>6)+1)*16;w[len-1]=l;
+           for(let j=0;j<len;j+=16){const a=w.slice(j,j+16),o=h.slice(0);
+            for(let i=0;i<64;i++){
+             if(i>=16){const a15=a[i-15]|0,a2=a[i-2]|0;
+              a[i]=(a[i-16]|0)+(r(7,a15)^r(18,a15)^(a15>>>3))+(a[i-7]|0)+(r(17,a2)^r(19,a2)^(a2>>>10))|0}
+             const e=o[4],A=o[0];
+             const t1=(o[7]+(r(6,e)^r(11,e)^r(25,e))+((e&o[5])^(~e&o[6]))+K[i]+(a[i]|0))|0;
+             const t2=((r(2,A)^r(13,A)^r(22,A))+((A&o[1])^(A&o[2])^(o[1]&o[2])))|0;
+             o.unshift((t1+t2)|0);o[4]=(o[4]+t1)|0;o.pop()}
+            for(let i=0;i<8;i++)h[i]=(h[i]+o[i])|0}
+           return h.map(x=>(x>>>0).toString(16).padStart(8,'0')).join('')}
+          async function sha(s){return sha256(s)}
+
+          async function login(){
+           const h=await sha($('u').value.trim()+':'+$('p').value.trim());
+           if(h===H){sv('qoriqlash_auth',1);enter()}else $('ge').textContent='Kod yoki parol noto‘g‘ri';}
+          function enter(){$('gate').classList.add('hide');$('app').classList.remove('hide');init();}
+          function logout(){localStorage.removeItem('qoriqlash_auth');localStorage.removeItem('isab_auth');location.reload()}
+          if(ld('qoriqlash_auth',0)===1||ld('isab_auth',0)===1)enter();
+
+          function init(){
+           for(const k of ['tok','cid','sens','src'])$(k).value=S[k];
+           for(const [k,i] of Object.entries(F))$(i).value=S[k]||'';
+           for(const k of ['fv','fa','fp','fk','fw'])$(k).checked=S[k];
+           renderLog();
+           if(ld('qoriqlash_run',false)&&!run)toggle();
+          }
+          function save(){
+           Object.assign(S,{src:$('src').value,tok:$('tok').value.trim(),cid:$('cid').value.trim(),sens:+$('sens').value});
+           for(const [k,i] of Object.entries(F))S[k]=$(i).value.trim();
+           for(const k of ['fv','fa','fp','fk','fw'])S[k]=$(k).checked;
+           sv('qoriqlash_s',S);}
+          function tab(n,b){for(const x of ['home','set','log'])$('t-'+x).classList.toggle('hide',x!==n);
+           document.querySelectorAll('nav button').forEach(x=>x.classList.remove('on'));b.classList.add('on')}
+          const msg=(id,t,c)=>{$(id).textContent=t;$(id).className='st '+(c||'')};
+
+          const API=m=>`https://api.telegram.org/bot${S.tok}/${m}`;
+          async function testTg(){save();msg('s2','Tekshirilmoqda...');
+           try{const a=await(await fetch(API('getMe'))).json();if(!a.ok)throw 0;
+            const b=await(await fetch(API('sendMessage'),{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({chat_id:S.cid,text:'✅ Qo‘riqlash ulandi'})})).json();
+            b.ok?msg('s2','✅ Ulandi: @'+a.result.username,'ok'):msg('s2','❌ Chat ID noto‘g‘ri (botga /start yozing)','er')}
+           catch(e){msg('s2','❌ Token noto‘g‘ri yoki internet yo‘q','er')}}
+          async function tgSend(kind,blob,cap){
+           if(!S.tok||!S.cid||!blob)return;const f=new FormData();f.append('chat_id',S.cid);f.append('caption',cap);
+           f.append(kind==='photo'?'photo':'video',blob,kind==='photo'?'a.jpg':'a.webm');
+           try{await fetch(API(kind==='photo'?'sendPhoto':'sendVideo'),{method:'POST',body:f})}catch(e){}}
+          const tgText=t=>S.tok&&S.cid&&fetch(API('sendMessage'),{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({chat_id:S.cid,text:t})}).catch(()=>{});
+
+          async function startPhone(){
+           stream=await navigator.mediaDevices.getUserMedia({video:{facingMode:'environment',width:640,height:480},audio:S.fa||S.fv});
+           const v=$('v');v.srcObject=stream;v.classList.remove('hide');$('ip').classList.add('hide');await v.play();
+           if(S.fa){actx=new(window.AudioContext||webkitAudioContext)();const s=actx.createMediaStreamSource(stream);an=actx.createAnalyser();an.fftSize=512;s.connect(an)}}
+          async function testPhone(){msg('s1','Tekshirilmoqda...');
+           try{const s=await navigator.mediaDevices.getUserMedia({video:true});const v=$('v');v.srcObject=s;v.classList.remove('hide');$('ip').classList.add('hide');await v.play();
+            msg('s1','✅ Telefon kamerasi ishlayapti','ok');setTimeout(()=>{if(!run){s.getTracks().forEach(t=>t.stop())}},4000)}
+           catch(e){msg('s1','❌ Kamera ruxsati berilmadi','er')}}
+
+          const NP={};let nid=0;
+          window.onSnap=(id,b64)=>{const f=NP[id];if(f){delete NP[id];f(b64)}};
+          const splitList=v=>(v||'').split(/[\n,]+/).map(x=>x.trim()).filter(Boolean);
+          const chl=()=>(S.chs||'1').split(',').map(x=>x.trim()).filter(Boolean);
+
+          function camTargets(){
+           if(S.br==='url'){
+            return splitList(S.ip).map((u,idx)=>({key:'u'+idx,label:'URL #'+(idx+1),url:u}));
+           }
+           const ips=splitList(S.ipa);
+           const channels=chl();
+           const out=[];
+           for(const ip of ips){
+            const base=(/^https?:\/\//i.test(ip)?ip.replace(/\/+$/,''):'http://'+ip)+(S.prt&&S.prt!='80'&&!/:\d+$/.test(ip)?':'+S.prt:'');
+            for(const ch of channels){
+             const url=S.br==='dahua'
+              ?base+'/cgi-bin/snapshot.cgi?channel='+ch
+              :base+'/ISAPI/Streaming/channels/'+(+ch*100+1)+'/picture';
+             out.push({key:ip+'_'+ch,label:ip+' (kan '+ch+')',url});
+            }
+           }
+           return out;
+          }
+
+          function ipFrameByUrl(u){return new Promise((res,rej)=>{
+           if(!u)return rej(new Error('no_url'));
+           if(window.Android){const id=++nid;
+            NP[id]=b=>{if(!b)return rej(new Error('x'));const bin=atob(b),a=new Uint8Array(bin.length);for(let i=0;i<bin.length;i++)a[i]=bin.charCodeAt(i);res(new Blob([a],{type:'image/jpeg'}))};
+            setTimeout(()=>{if(NP[id]){delete NP[id];rej(new Error('t'))}},9000);
+            Android.snap(id,u,S.usr||'',S.pwd||'')}
+           else fetch(u,{cache:'no-store'}).then(r=>r.ok?r.blob():Promise.reject()).then(res,rej)})}
+
+          async function testIp(){save();msg('s3','Tekshirilmoqda...');const ok=[],bad=[];
+           const list=camTargets();
+           if(!list.length){msg('s3','❌ Kamida bitta IP manzil yoki URL kiriting','er');return;}
+           for(const t of list){try{const b=await ipFrameByUrl(t.url);const u=URL.createObjectURL(b);$('pv').src=u;$('pv').classList.remove('hide');lastBlob=b;ok.push(t.label)}catch(e){bad.push(t.label)}}
+           if(!ok.length)msg('s3','❌ Ulanib bo‘lmadi. IP, login, parol va kanalni tekshiring'+(window.Android?'':' (login-parol faqat APK ichida ishlaydi)'),'er');
+           else msg('s3','✅ Ishlayapti: '+ok.join(', ')+(bad.length?' | ❌ ishlamadi: '+bad.join(', '):''),'ok')}
+
+          async function toggle(){
+           if(run){stop();return}
+           save();try{
+            if(S.src==='phone')await startPhone();else{$('v').classList.add('hide');$('ip').classList.remove('hide')}
+            run=true;sv('qoriqlash_run',true);PV={};ci=-1;$('go').textContent='⏹ To‘xtatish';$('go').classList.add('r');
+            $('state').textContent='● Faol';$('state').className='st ok';msg('hs','');
+            if(S.fw&&navigator.wakeLock)try{wl=await navigator.wakeLock.request('screen')}catch(e){}
+            clearInterval(timer);timer=setInterval(tick,700);
+           }catch(e){msg('hs','❌ Boshlab bo‘lmadi: '+(e.message||e),'er')}}
+          function stop(){run=false;sv('qoriqlash_run',false);clearInterval(timer);
+           stream&&stream.getTracks().forEach(t=>t.stop());stream=null;
+           if(actx){actx.close().catch(()=>{});actx=null;an=null}
+           wl&&wl.release().catch(()=>{});wl=null;
+           $('go').textContent='▶ Nazoratni boshlash';$('go').classList.remove('r');$('state').textContent='○ O‘chiq';$('state').className='st'}
+          document.addEventListener('visibilitychange',async()=>{if(run&&!document.hidden&&S.fw&&navigator.wakeLock)try{wl=await navigator.wakeLock.request('screen')}catch(e){}});
+
+          async function frame(){
+           const c=$('c'),x=c.getContext('2d',{willReadFrequently:true});c.width=160;c.height=120;
+           if(S.src==='phone'){curKey='ph';curLabel='';if(!$('v').videoWidth)return null;x.drawImage($('v'),0,0,160,120)}
+           else{if(ipBusy)return null;ipBusy=true;try{
+            const list=camTargets();if(!list.length){ipBusy=false;return null;}
+            ci=(ci+1)%list.length;const target=list[ci];
+            curKey=target.key;curLabel=target.label;
+            const b=await ipFrameByUrl(target.url);lastBlob=b;
+            const bm=await createImageBitmap(b);x.drawImage(bm,0,0,160,120);bm.close&&bm.close();
+            const u=URL.createObjectURL(b);$('ip').src=u;setTimeout(()=>URL.revokeObjectURL(u),3000)
+           }catch(e){ipBusy=false;return null}ipBusy=false}
+           return x.getImageData(0,0,160,120).data}
+
+          function estimatePeople(d,prev){
+           let activeCols=new Set();
+           for(let y=0;y<120;y+=4){
+            for(let x=0;x<160;x+=4){
+             const idx=(y*160+x)*4;
+             if(Math.abs(d[idx]-prev[idx])+Math.abs(d[idx+1]-prev[idx+1])>65){
+              activeCols.add(Math.floor(x/20));
+             }
+            }
+           }
+           if(activeCols.size===0)return 0;
+           return Math.max(1,Math.min(10,Math.ceil(activeCols.size/2)));
+          }
+
+          async function tick(){
+           const d=await frame();if(!d)return;
+           const prev=PV[curKey];
+           if(prev){
+            let n=0;for(let i=0;i<d.length;i+=16)if(Math.abs(d[i]-prev[i])+Math.abs(d[i+1]-prev[i+1])>60)n++;
+            const th=(11-S.sens)*18;
+            const hasMotion=n>th;
+            $('dot').textContent=hasMotion?'● HARAKAT'+(curLabel?' · '+curLabel:''):'● Kuzatilmoqda'+(curLabel?' · '+curLabel:'');
+            if(hasMotion){
+             const camTag=curLabel?' ['+curLabel+']':'';
+             let extra='';
+             if(S.fp){const est=estimatePeople(d,prev);if(est>0)extra=` — taxminan ${est} ta harakat/odam`;}
+             event('motion','Harakat aniqlandi'+camTag+extra);
+             if(S.fk){
+              const now=Date.now();
+              if(now-lastAttTs>60000){
+               lastAttTs=now;
+               const mode=new Date().getHours()<13?'Keldi (kirish)':'Ketdi/harakat (chiqish)';
+               add('att','Davomat: '+mode+camTag);
+               tgText('🕘 Davomat qayd etildi: '+mode+camTag+' — '+new Date().toLocaleString('uz'));
+              }
+             }
+            }
+           }
+           PV[curKey]=d;
+           if(S.fa&&an){const a=new Uint8Array(an.fftSize);an.getByteTimeDomainData(a);let m=0;a.forEach(v=>m=Math.max(m,Math.abs(v-128)));
+            if(m>(11-S.sens)*9+30&&Date.now()-lastSoundTs>15000){lastSoundTs=Date.now();event('sound','Baland tovush aniqlandi')}}}
+
+          async function event(type,text){
+           const now=Date.now();if(now-lastEventTs<15000)return;lastEventTs=now;
+           add(type,text);const cap='🚨 '+text+' — '+new Date().toLocaleString('uz');
+           $('c').width=640;$('c').height=480;
+           if(S.src==='phone'&&$('v').videoWidth){$('c').getContext('2d').drawImage($('v'),0,0,640,480);
+            $('c').toBlob(b=>tgSend('photo',b,cap),'image/jpeg',.8);
+            if(S.fv&&stream&&window.MediaRecorder&&!rec){const ch=[];rec=new MediaRecorder(stream);rec.ondataavailable=e=>ch.push(e.data);
+             rec.onstop=()=>{tgSend('video',new Blob(ch,{type:'video/webm'}),cap);rec=null};rec.start();setTimeout(()=>rec&&rec.state==='recording'&&rec.stop(),6000)}}
+           else if(lastBlob)tgSend('photo',lastBlob,cap)}
+
+          async function shot(){
+           const cap='📸 Qo‘lda rasm — '+new Date().toLocaleString('uz');
+           if(S.src==='phone'&&run&&$('v').videoWidth){
+            $('c').width=640;$('c').height=480;$('c').getContext('2d').drawImage($('v'),0,0,640,480);
+            $('c').toBlob(b=>{add('photo','Qo‘lda rasm olindi');tgSend('photo',b,cap);msg('hs','Yuborildi','ok')},'image/jpeg',.8);
+           }else if(S.src==='ip'){
+            try{
+             const first=camTargets()[0];
+             const b=lastBlob||(first&&await ipFrameByUrl(first.url));
+             if(!b)throw new Error('no_frame');
+             lastBlob=b;add('photo','IP kamera rasmi olindi'+(curLabel?' ['+curLabel+']':''));
+             tgSend('photo',b,cap);msg('hs','IP rasm yuborildi','ok');
+            }catch(e){msg('hs','❌ IP kameradan rasm olinmadi','er')}
+           }else msg('hs','Avval nazoratni boshlang','er')}
+
+          function iconFor(t){
+           if(t==='sound')return '🔊';
+           if(t==='photo')return '📸';
+           if(t==='att')return '🕘';
+           return '🎬';
+          }
+          function add(t,x){LOG.unshift({t,x,d:new Date().toLocaleString('uz'),ts:Date.now()});LOG=LOG.slice(0,300);sv('qoriqlash_log',LOG);renderLog()}
+          function renderLog(){const q=$('q')?$('q').value.toLowerCase():'';
+           $('log').innerHTML=LOG.filter(e=>(e.x+e.d).toLowerCase().includes(q)).map(e=>`<div class="ev">${iconFor(e.t)} ${e.x}<small>${e.d}</small></div>`).join('')||'<div class="st">Hodisa yo‘q</div>';
+           const td=LOG.filter(e=>Date.now()-e.ts<864e5).length;$('cnt').textContent='So‘nggi 24 soatda: '+td+' ta hodisa'}
+          function clr(){LOG=[];sv('qoriqlash_log',LOG);renderLog()}
+          </script></body></html>
+          EOF
+
+          gradle wrapper --gradle-version 8.7 --distribution-type bin
+          chmod +x ./gradlew
+
+      - name: Build Debug APK
+        run: ./gradlew assembleDebug --no-daemon
+
+      - name: Upload APK artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: qoriqlash-debug-apk
+          path: app/build/outputs/apk/debug/app-debug.apk
